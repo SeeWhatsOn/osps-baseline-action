@@ -124,12 +124,15 @@ runs:
         SUMMARY_LINE=$(grep '> pvtr_' "$LOG_FILE" | sed 's/.*> //' || true)
 
         # Parse counts from the summary line
-        PASSED=$(echo "$SUMMARY_LINE" | sed -n 's/.*\([0-9][0-9]*\) Passed.*/\1/p')
-        WARNINGS=$(echo "$SUMMARY_LINE" | sed -n 's/.*\([0-9][0-9]*\) Warnings.*/\1/p')
-        FAILED=$(echo "$SUMMARY_LINE" | sed -n 's/.*\([0-9][0-9]*\) Failed.*/\1/p')
+        PASSED=$(echo "$SUMMARY_LINE" | sed -n 's/.*\([0-9][0-9]*\) Passed.*/\1/p' | head -1)
+        WARNINGS=$(echo "$SUMMARY_LINE" | sed -n 's/.*\([0-9][0-9]*\) Warnings.*/\1/p' | head -1)
+        FAILED=$(echo "$SUMMARY_LINE" | sed -n 's/.*\([0-9][0-9]*\) Failed.*/\1/p' | head -1)
         PASSED=${PASSED:-0}
         WARNINGS=${WARNINGS:-0}
         FAILED=${FAILED:-0}
+        case "$PASSED" in ''|*[!0-9]*) PASSED=0 ;; esac
+        case "$WARNINGS" in ''|*[!0-9]*) WARNINGS=0 ;; esac
+        case "$FAILED" in ''|*[!0-9]*) FAILED=0 ;; esac
 
         # Write markdown header and results
         {
@@ -180,9 +183,15 @@ runs:
       run: |
         SARIF_FILE=$(find evaluation_results -name "*.sarif" -type f 2>/dev/null | head -1)
         if [ -n "$SARIF_FILE" ] && [ -f "$SARIF_FILE" ]; then
+          # Code Scanning shows tool.driver.name; Privateer sets it to the plugin id ("github-repo").
+          jq '.runs |= map(.tool.driver.name = "OSPS Baseline")' "$SARIF_FILE" > "${SARIF_FILE}.tmp" \
+            && mv "${SARIF_FILE}.tmp" "$SARIF_FILE" || rm -f "${SARIF_FILE}.tmp"
           # Validate that the SARIF file contains at least one result
           # GitHub Code Scanning requires at least one result in runs[].results array
-          RESULT_COUNT=$(jq '[.runs[]?.results[]?] | length' "$SARIF_FILE" 2>/dev/null || echo "0")
+          RESULT_COUNT=$(jq -r '[.runs[]?.results[]?] | length' "$SARIF_FILE" 2>/dev/null || true)
+          case "$RESULT_COUNT" in
+            ''|*[!0-9]*) RESULT_COUNT=0 ;;
+          esac
           if [ "$RESULT_COUNT" -gt 0 ]; then
             echo "✅ SARIF file contains $RESULT_COUNT result(s)"
             echo "sarif_file=$SARIF_FILE" >> $GITHUB_OUTPUT
