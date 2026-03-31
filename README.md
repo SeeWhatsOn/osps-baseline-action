@@ -61,6 +61,8 @@ jobs:
 | `owner` | Repository owner (organization or user) | Yes | - |
 | `repo` | Repository name | Yes | - |
 | `token` | GitHub Personal Access Token with repo read permissions | Yes | - |
+| `catalog` | OSPS catalog to assess against | No | `osps-baseline` |
+| `maturity-levels` | Applicability: one maturity level per line (e.g. `Maturity Level 1`). Add `Maturity Level 2` / `Maturity Level 3` lines to assess more controls than Level 1 alone. | No | `Maturity Level 1` |
 | `output-format` | Output format (`yaml`, `json`, or `sarif`) | No | `yaml` |
 | `upload-sarif` | Upload results as SARIF to GitHub Security tab. When `true`, `output-format` is automatically set to `sarif` | No | `false` |
 | `fail-on-error` | Fail the workflow if any controls have errors. When `false`, results are reported but the step always passes | No | `false` |
@@ -87,6 +89,10 @@ Your GitHub Personal Access Token needs **repository read permissions**. For pub
 ### Q: Can I use `GITHUB_TOKEN` instead of a Personal Access Token?
 
 **A:** Unfortunately, no. For running the OSPS plugin against public repositories, the builtin CI token does not have access to make API calls.
+
+### Q: Why does the summary show many "Possible" controls, or SARIF with almost nothing in Code Scanning?
+
+**A:** **Possible** counts controls that were not scored as pass/fail for the maturity levels in this run (by default, **Maturity Level 1** only). That is not the same as passing those controls. Use the `maturity-levels` input to add `Maturity Level 2` and/or `Maturity Level 3` lines if you want a broader assessment. Separately, SARIF from this scanner often includes only **findings** it encodes as results; use the job summary and `evaluation_results` artifacts for the full Passed / Warnings / Failed / Possible picture.
 
 ### Q: Why isn't my SARIF file uploading to the Security tab?
 

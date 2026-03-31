@@ -20,6 +20,11 @@ inputs:
     description: "OSPS catalog to assess against"
     required: false
     default: "osps-baseline"
+  maturity-levels:
+    description: "Policy applicability: one maturity level per line (e.g. Maturity Level 1). Default is Level 1 only; add Level 2 / 3 lines to evaluate more controls."
+    required: false
+    default: |
+      Maturity Level 1
   output-format:
     description: "Output format (yaml, json, or sarif)"
     required: false
@@ -50,6 +55,7 @@ runs:
         REPO: ${{ inputs.repo }}
         TOKEN: ${{ inputs.token }}
         UPLOAD_SARIF: ${{ inputs.upload-sarif }}
+        MATURITY_LEVELS: ${{ inputs.maturity-levels }}
       run: |
         # If upload-sarif is enabled, use sarif output format
         if [ "$UPLOAD_SARIF" = "true" ]; then
@@ -70,7 +76,21 @@ runs:
               catalogs:
                 - "$CATALOG"
               applicability:
-                - "Maturity Level 1"
+        EOF
+        MATURITY_COUNT=0
+        while IFS= read -r line || [ -n "$line" ]; do
+          line="${line#"${line%%[![:space:]]*}"}"
+          line="${line%"${line##*[![:space:]]}"}"
+          [ -z "$line" ] && continue
+          MATURITY_COUNT=$((MATURITY_COUNT + 1))
+          printf '                - "%s"\n' "$line" >> /tmp/pvtr-config.yml
+        done << MATURITY_EOF
+        $MATURITY_LEVELS
+        MATURITY_EOF
+        if [ "$MATURITY_COUNT" -eq 0 ]; then
+          printf '                - "%s"\n' "Maturity Level 1" >> /tmp/pvtr-config.yml
+        fi
+        cat >> /tmp/pvtr-config.yml << EOF
             vars:
               owner: "$OWNER"
               repo: "$REPO"
@@ -127,12 +147,15 @@ runs:
         PASSED=$(echo "$SUMMARY_LINE" | sed -n 's/.*\([0-9][0-9]*\) Passed.*/\1/p' | head -1)
         WARNINGS=$(echo "$SUMMARY_LINE" | sed -n 's/.*\([0-9][0-9]*\) Warnings.*/\1/p' | head -1)
         FAILED=$(echo "$SUMMARY_LINE" | sed -n 's/.*\([0-9][0-9]*\) Failed.*/\1/p' | head -1)
+        POSSIBLE=$(echo "$SUMMARY_LINE" | sed -n 's/.*\([0-9][0-9]*\) Possible.*/\1/p' | head -1)
         PASSED=${PASSED:-0}
         WARNINGS=${WARNINGS:-0}
         FAILED=${FAILED:-0}
+        POSSIBLE=${POSSIBLE:-0}
         case "$PASSED" in ''|*[!0-9]*) PASSED=0 ;; esac
         case "$WARNINGS" in ''|*[!0-9]*) WARNINGS=0 ;; esac
         case "$FAILED" in ''|*[!0-9]*) FAILED=0 ;; esac
+        case "$POSSIBLE" in ''|*[!0-9]*) POSSIBLE=0 ;; esac
 
         # Write markdown header and results
         {
@@ -140,9 +163,11 @@ runs:
           echo ""
           echo "**Repository:** \`${OWNER}/${REPO}\` | **Catalog:** \`${CATALOG}\`"
           echo ""
-          echo "| Passed | Warnings | Failed |"
-          echo "|:------:|:--------:|:------:|"
-          echo "| ${PASSED} | ${WARNINGS} | ${FAILED} |"
+          echo "| Passed | Warnings | Failed | Possible |"
+          echo "|:------:|:--------:|:------:|:--------:|"
+          echo "| ${PASSED} | ${WARNINGS} | ${FAILED} | ${POSSIBLE} |"
+          echo ""
+          echo "_**Possible** is the count of controls not evaluated as pass/fail for the maturity levels in this run (for example Level 1 only). It does not mean those controls passed._"
           echo ""
           echo "### Control Results"
           echo ""
@@ -184,7 +209,35 @@ runs:
         SARIF_FILE=$(find evaluation_results -name "*.sarif" -type f 2>/dev/null | head -1)
         if [ -n "$SARIF_FILE" ] && [ -f "$SARIF_FILE" ]; then
           # Code Scanning shows tool.driver.name; Privateer sets it to the plugin id ("github-repo").
-          jq '.runs |= map(.tool.driver.name = "OSPS Baseline")' "$SARIF_FILE" > "${SARIF_FILE}.tmp" \
+          NATIVE_COUNT=$(jq -r '[.runs[]?.results[]?] | length' "$SARIF_FILE" 2>/dev/null || true)
+          case "$NATIVE_COUNT" in ''|*[!0-9]*) NATIVE_COUNT=0 ;; esac
+          if [ "$NATIVE_COUNT" -eq 0 ]; then
+            echo "::notice::Scanner SARIF has 0 result entries (common when a tool only emits findings, not passes). Use this job summary and evaluation_results artifacts for Passed / Warnings / Failed / Possible. If the log shows failures but SARIF stays empty, file an issue at https://github.com/ossf/pvtr-github-repo-scanner/issues"
+          fi
+          # GitHub Code Scanning rejects uploads with zero results; add a neutral placeholder only when the file is otherwise empty.
+          jq '.runs |= map(
+            .tool.driver.name = "OSPS Baseline"
+            | if ((.results // []) | length) == 0 then
+                .tool.driver.rules = ((.tool.driver.rules // []) + [{
+                  "id": "OSPS-BASELINE/SARIF-UPLOAD-PLACEHOLDER",
+                  "name": "SarifUploadPlaceholder",
+                  "shortDescription": {"text": "No SARIF findings in scanner output"},
+                  "fullDescription": {"text": "The scanner produced no SARIF result objects. That usually means no issues were encoded into SARIF for this run—not that every OSPS control passed. Check the workflow summary and evaluation_results (log/yaml/json) for full status. Possible counts reflect controls outside the selected maturity levels. This note exists only because GitHub requires at least one SARIF result to accept an upload."},
+                  "defaultConfiguration": {"level": "note"}
+                }])
+                | .results = [{
+                  "ruleId": "OSPS-BASELINE/SARIF-UPLOAD-PLACEHOLDER",
+                  "kind": "informational",
+                  "level": "note",
+                  "message": {"text": "No SARIF findings from the scanner in this file. See the workflow summary and evaluation_results for Passed, Warnings, Failed, and Possible counts."},
+                  "locations": [{
+                    "physicalLocation": {
+                      "artifactLocation": {"uri": "README.md"}
+                    }
+                  }]
+                }]
+              else . end
+          )' "$SARIF_FILE" > "${SARIF_FILE}.tmp" \
             && mv "${SARIF_FILE}.tmp" "$SARIF_FILE" || rm -f "${SARIF_FILE}.tmp"
           # Validate that the SARIF file contains at least one result
           # GitHub Code Scanning requires at least one result in runs[].results array
