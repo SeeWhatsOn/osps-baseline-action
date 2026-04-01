@@ -209,11 +209,6 @@ runs:
         SARIF_FILE=$(find evaluation_results -name "*.sarif" -type f 2>/dev/null | head -1)
         if [ -n "$SARIF_FILE" ] && [ -f "$SARIF_FILE" ]; then
           # Code Scanning shows tool.driver.name; Privateer sets it to the plugin id ("github-repo").
-          NATIVE_COUNT=$(jq -r '[.runs[]?.results[]?] | length' "$SARIF_FILE" 2>/dev/null || true)
-          case "$NATIVE_COUNT" in ''|*[!0-9]*) NATIVE_COUNT=0 ;; esac
-          if [ "$NATIVE_COUNT" -eq 0 ]; then
-            echo "::notice::Scanner SARIF has 0 result entries (common when a tool only emits findings, not passes). Use this job summary and evaluation_results artifacts for Passed / Warnings / Failed / Possible. If the log shows failures but SARIF stays empty, file an issue at https://github.com/ossf/pvtr-github-repo-scanner/issues"
-          fi
           # GitHub Code Scanning rejects uploads with zero results; add a neutral placeholder only when the file is otherwise empty.
           jq '.runs |= map(
             .tool.driver.name = "OSPS Baseline"
