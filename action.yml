@@ -32,6 +32,22 @@ inputs:
     description: "Fail the workflow if any controls have errors. When false, results are reported but the step always passes"
     required: false
     default: "false"
+  scanner-image:
+    description: "Container image for pvtr-github-repo-scanner (used when scanner-build-from-source is false). Must match a tag published to GHCR or any image your runner can pull"
+    required: false
+    default: "ghcr.io/ossf/pvtr-github-repo-scanner:v0.22.1"
+  scanner-build-from-source:
+    description: "If true, clone ossf/pvtr-github-repo-scanner and docker build instead of pulling scanner-image (useful to test a Git tag/branch/SHA that has no GHCR manifest)"
+    required: false
+    default: "false"
+  scanner-source-repository:
+    description: "Git URL to clone when scanner-build-from-source is true (forks can point here)"
+    required: false
+    default: "https://github.com/ossf/pvtr-github-repo-scanner.git"
+  scanner-source-ref:
+    description: "Git ref to build when scanner-build-from-source is true (branch name, tag, or commit SHA)"
+    required: false
+    default: "main"
 
 outputs:
   results-path:
@@ -83,13 +99,31 @@ runs:
         mkdir -p evaluation_results
         chmod 777 evaluation_results
 
+    - name: Build scanner image from source
+      if: inputs.scanner-build-from-source == 'true'
+      shell: bash
+      env:
+        SCANNER_SOURCE_REPOSITORY: ${{ inputs.scanner-source-repository }}
+        SCANNER_SOURCE_REF: ${{ inputs.scanner-source-ref }}
+      run: |
+        set -euo pipefail
+        DEST="${RUNNER_TEMP}/pvtr-github-repo-scanner-build"
+        rm -rf "$DEST"
+        git clone --no-checkout --filter=blob:none "$SCANNER_SOURCE_REPOSITORY" "$DEST"
+        cd "$DEST"
+        git fetch --depth 1 origin "$SCANNER_SOURCE_REF"
+        git checkout FETCH_HEAD
+        docker build -t pvtr-github-repo-scanner:local .
+
     - name: Run OSPS Assessment
       shell: bash
+      env:
+        SCANNER_IMAGE: ${{ inputs.scanner-build-from-source == 'true' && 'pvtr-github-repo-scanner:local' || inputs.scanner-image }}
       run: |
         docker run --rm \
           -v /tmp/pvtr-config.yml:/.privateer/config.yml \
           -v ${{ github.workspace }}/evaluation_results:/.privateer/bin/evaluation_results \
-          ghcr.io/ossf/pvtr-github-repo-scanner:v0.18.1
+          "$SCANNER_IMAGE"
 
     - name: Write results to workflow summary
       shell: bash

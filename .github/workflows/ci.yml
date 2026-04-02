@@ -27,3 +27,20 @@ jobs:
           repo: ${{ github.event.repository.name }}
           token: ${{ secrets.GITHUB_TOKEN }}
           catalog: "osps-baseline"
+
+  validate-scanner-from-source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Validate Action (pvtr scanner built from source)
+        uses: ./
+        with:
+          owner: ${{ github.repository_owner }}
+          repo: ${{ github.event.repository.name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          catalog: "osps-baseline"
+          scanner-build-from-source: true
+          scanner-source-ref: main
