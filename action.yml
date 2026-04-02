@@ -19,7 +19,7 @@ inputs:
   catalog:
     description: "OSPS catalog to assess against"
     required: false
-    default: "osps-baseline"
+    default: "osps-baseline-2026-02"
   output-format:
     description: "Output format (yaml, json, or sarif)"
     required: false
@@ -136,6 +136,17 @@ runs:
         set -euo pipefail
         OSPS_ID='OSPS-[A-Z0-9]+-[0-9]+\.[0-9]+'
 
+        num_or_zero() {
+          local raw="$1"
+          local digits
+          digits=$(printf '%s' "$raw" | tr -cd '0-9')
+          if [ -z "$digits" ]; then
+            echo 0
+          else
+            echo "$digits"
+          fi
+        }
+
         latest_file() {
           find evaluation_results -name "$1" -type f 2>/dev/null | while read -r f; do
             [ -f "$f" ] || continue
@@ -177,12 +188,16 @@ runs:
           WARNINGS=${WARNINGS:-0}
           FAILED=${FAILED:-0}
         elif [ -n "${SARIF_FILE:-}" ] && [ -f "$SARIF_FILE" ] && command -v jq >/dev/null 2>&1; then
-          RC=$(jq '[.runs[]?.results[]?] | length' "$SARIF_FILE" 2>/dev/null || echo 0)
+          RC=$(jq '[.runs[]?.results[]?] | length' "$SARIF_FILE" 2>/dev/null || true)
+          RC=$(num_or_zero "${RC:-}")
           if [ "$RC" -gt 0 ]; then
             SUMMARY_FROM=sarif
-            FAILED=$(jq '[.runs[]?.results[]? | select(.level == "error")] | length' "$SARIF_FILE" 2>/dev/null || echo 0)
-            WARNINGS=$(jq '[.runs[]?.results[]? | select(.level == "warning")] | length' "$SARIF_FILE" 2>/dev/null || echo 0)
-            PASSED=$(jq '[.runs[]?.results[]? | select(.level != "error" and .level != "warning")] | length' "$SARIF_FILE" 2>/dev/null || echo 0)
+            FAILED=$(jq '[.runs[]?.results[]? | select(.level == "error")] | length' "$SARIF_FILE" 2>/dev/null || true)
+            WARNINGS=$(jq '[.runs[]?.results[]? | select(.level == "warning")] | length' "$SARIF_FILE" 2>/dev/null || true)
+            PASSED=$(jq '[.runs[]?.results[]? | select(.level != "error" and .level != "warning")] | length' "$SARIF_FILE" 2>/dev/null || true)
+            FAILED=$(num_or_zero "${FAILED:-}")
+            WARNINGS=$(num_or_zero "${WARNINGS:-}")
+            PASSED=$(num_or_zero "${PASSED:-}")
           fi
         fi
 
@@ -263,6 +278,17 @@ runs:
       if: inputs.upload-sarif == 'true'
       continue-on-error: true
       run: |
+        num_or_zero() {
+          local raw="$1"
+          local digits
+          digits=$(printf '%s' "$raw" | tr -cd '0-9')
+          if [ -z "$digits" ]; then
+            echo 0
+          else
+            echo "$digits"
+          fi
+        }
+
         latest_file() {
           find evaluation_results -name "$1" -type f 2>/dev/null | while read -r f; do
             [ -f "$f" ] || continue
@@ -275,7 +301,8 @@ runs:
         if [ -n "$SARIF_FILE" ] && [ -f "$SARIF_FILE" ]; then
           # Validate that the SARIF file contains at least one result
           # GitHub Code Scanning requires at least one result in runs[].results array
-          RESULT_COUNT=$(jq '[.runs[]?.results[]?] | length' "$SARIF_FILE" 2>/dev/null || echo "0")
+          RESULT_COUNT=$(jq '[.runs[]?.results[]?] | length' "$SARIF_FILE" 2>/dev/null || true)
+          RESULT_COUNT=$(num_or_zero "${RESULT_COUNT:-}")
           if [ "$RESULT_COUNT" -gt 0 ]; then
             echo "✅ SARIF file contains $RESULT_COUNT result(s)"
             echo "sarif_file=$SARIF_FILE" >> $GITHUB_OUTPUT
