@@ -147,16 +147,19 @@ runs:
         LOG_FILE=$(latest_file '*.log')
         SARIF_FILE=$(latest_file '*.sarif')
 
-        if [ -z "$LOG_FILE" ] || [ ! -f "$LOG_FILE" ]; then
-          echo "No log file found, skipping workflow summary"
+        if { [ -z "${LOG_FILE:-}" ] || [ ! -f "$LOG_FILE" ]; } && { [ -z "${SARIF_FILE:-}" ] || [ ! -f "$SARIF_FILE" ]; }; then
+          echo "No log or SARIF file found, skipping workflow summary"
           exit 0
         fi
 
-        # Legacy format: TIMESTAMP [LEVEL]  OSPS-...
-        CONTROL_LINES=$(grep -Ei '\[(info|warn|warning|error|fatal)\].*'"$OSPS_ID" "$LOG_FILE" || true)
-        # Newer pvtr / structured logs: any line containing a control id (avoid depending on bracketed levels)
-        if [ -z "$CONTROL_LINES" ]; then
-          CONTROL_LINES=$(grep -E "$OSPS_ID" "$LOG_FILE" || true)
+        CONTROL_LINES=""
+        if [ -n "${LOG_FILE:-}" ] && [ -f "$LOG_FILE" ]; then
+          # Legacy format: TIMESTAMP [LEVEL]  OSPS-...
+          CONTROL_LINES=$(grep -Ei '\[(info|warn|warning|error|fatal)\].*'"$OSPS_ID" "$LOG_FILE" || true)
+          # Newer pvtr / structured logs: any line containing a control id
+          if [ -z "$CONTROL_LINES" ]; then
+            CONTROL_LINES=$(grep -E "$OSPS_ID" "$LOG_FILE" || true)
+          fi
         fi
 
         SUMMARY_FROM=""
@@ -260,7 +263,15 @@ runs:
       if: inputs.upload-sarif == 'true'
       continue-on-error: true
       run: |
-        SARIF_FILE=$(find evaluation_results -name "*.sarif" -type f 2>/dev/null | head -1)
+        latest_file() {
+          find evaluation_results -name "$1" -type f 2>/dev/null | while read -r f; do
+            [ -f "$f" ] || continue
+            m=$(stat -c '%Y' "$f" 2>/dev/null || stat -f '%m' "$f" 2>/dev/null || echo 0)
+            printf '%s\t%s\n' "$m" "$f"
+          done | sort -n | tail -1 | cut -f2-
+        }
+
+        SARIF_FILE=$(latest_file '*.sarif')
         if [ -n "$SARIF_FILE" ] && [ -f "$SARIF_FILE" ]; then
           # Validate that the SARIF file contains at least one result
           # GitHub Code Scanning requires at least one result in runs[].results array

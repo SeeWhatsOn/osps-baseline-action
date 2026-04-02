@@ -64,6 +64,19 @@ jobs:
 | `output-format` | Output format (`yaml`, `json`, or `sarif`) | No | `yaml` |
 | `upload-sarif` | Upload results as SARIF to GitHub Security tab. When `true`, `output-format` is automatically set to `sarif` | No | `false` |
 | `fail-on-error` | Fail the workflow if any controls have errors. When `false`, results are reported but the step always passes | No | `false` |
+| `scanner-image` | Scanner image to run when not building from source (recommended path) | No | `ghcr.io/ossf/pvtr-github-repo-scanner:v0.22.1` |
+| `scanner-build-from-source` | Clone and build scanner source instead of pulling `scanner-image` (troubleshooting fallback) | No | `false` |
+| `scanner-source-repository` | Git repository URL used when `scanner-build-from-source` is `true` | No | `https://github.com/ossf/pvtr-github-repo-scanner.git` |
+| `scanner-source-ref` | Git ref (branch, tag, or SHA) used when `scanner-build-from-source` is `true` | No | `main` |
+
+### Scanner image vs source build
+
+Image mode is the default and recommended path:
+
+- Keep `scanner-build-from-source` as `false` (or omit it)
+- Optionally pin `scanner-image` to a specific published tag
+
+Source build mode is available as a fallback when you need to test a Git ref that does not have a published container image.
 
 ## Requirements
 
