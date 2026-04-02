@@ -133,39 +133,67 @@ runs:
         CATALOG: ${{ inputs.catalog }}
         FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
       run: |
-        LOG_FILE=$(find evaluation_results -name "*.log" -type f 2>/dev/null | head -1)
+        set -euo pipefail
+        OSPS_ID='OSPS-[A-Z0-9]+-[0-9]+\.[0-9]+'
+
+        latest_file() {
+          find evaluation_results -name "$1" -type f 2>/dev/null | while read -r f; do
+            [ -f "$f" ] || continue
+            m=$(stat -c '%Y' "$f" 2>/dev/null || stat -f '%m' "$f" 2>/dev/null || echo 0)
+            printf '%s\t%s\n' "$m" "$f"
+          done | sort -n | tail -1 | cut -f2-
+        }
+
+        LOG_FILE=$(latest_file '*.log')
+        SARIF_FILE=$(latest_file '*.sarif')
+
         if [ -z "$LOG_FILE" ] || [ ! -f "$LOG_FILE" ]; then
           echo "No log file found, skipping workflow summary"
           exit 0
         fi
 
-        # Parse control results from the log first to determine if we have data
-        # Format: TIMESTAMP [LEVEL]  OSPS-XX-YY.ZZ: description
-        CONTROL_LINES=$(grep -E '\[INFO\].*OSPS-|\[WARN\].*OSPS-|\[ERROR\].*OSPS-' "$LOG_FILE" || true)
-
+        # Legacy format: TIMESTAMP [LEVEL]  OSPS-...
+        CONTROL_LINES=$(grep -Ei '\[(info|warn|warning|error|fatal)\].*'"$OSPS_ID" "$LOG_FILE" || true)
+        # Newer pvtr / structured logs: any line containing a control id (avoid depending on bracketed levels)
         if [ -z "$CONTROL_LINES" ]; then
+          CONTROL_LINES=$(grep -E "$OSPS_ID" "$LOG_FILE" || true)
+        fi
+
+        SUMMARY_FROM=""
+        PASSED=0
+        WARNINGS=0
+        FAILED=0
+
+        if [ -n "$CONTROL_LINES" ]; then
+          SUMMARY_FROM=log
+          SUMMARY_LINE=$(grep -Ei '> pvtr_' "$LOG_FILE" | sed 's/.*> //' || true)
+          PASSED=$(echo "$SUMMARY_LINE" | sed -n 's/.*\([0-9][0-9]*\) Passed.*/\1/p')
+          WARNINGS=$(echo "$SUMMARY_LINE" | sed -n 's/.*\([0-9][0-9]*\) Warnings.*/\1/p')
+          FAILED=$(echo "$SUMMARY_LINE" | sed -n 's/.*\([0-9][0-9]*\) Failed.*/\1/p')
+          PASSED=${PASSED:-0}
+          WARNINGS=${WARNINGS:-0}
+          FAILED=${FAILED:-0}
+        elif [ -n "${SARIF_FILE:-}" ] && [ -f "$SARIF_FILE" ] && command -v jq >/dev/null 2>&1; then
+          RC=$(jq '[.runs[]?.results[]?] | length' "$SARIF_FILE" 2>/dev/null || echo 0)
+          if [ "$RC" -gt 0 ]; then
+            SUMMARY_FROM=sarif
+            FAILED=$(jq '[.runs[]?.results[]? | select(.level == "error")] | length' "$SARIF_FILE" 2>/dev/null || echo 0)
+            WARNINGS=$(jq '[.runs[]?.results[]? | select(.level == "warning")] | length' "$SARIF_FILE" 2>/dev/null || echo 0)
+            PASSED=$(jq '[.runs[]?.results[]? | select(.level != "error" and .level != "warning")] | length' "$SARIF_FILE" 2>/dev/null || echo 0)
+          fi
+        fi
+
+        if [ -z "$SUMMARY_FROM" ]; then
           {
             echo "## OSPS Baseline Assessment Results"
             echo ""
             echo "**Repository:** \`${OWNER}/${REPO}\` | **Catalog:** \`${CATALOG}\`"
             echo ""
-            echo "No control results found in log output. Please re-run the workflow."
+            echo "No control results could be parsed from the log (pvtr log format may have changed). If a SARIF file was written, check \`evaluation_results\` or the Security tab."
           } >> "$GITHUB_STEP_SUMMARY"
           exit 0
         fi
 
-        # Extract the summary line (e.g. "pvtr_osps-baseline: 16 Passed, 0 Warnings, 0 Failed, 40 Possible")
-        SUMMARY_LINE=$(grep '> pvtr_' "$LOG_FILE" | sed 's/.*> //' || true)
-
-        # Parse counts from the summary line
-        PASSED=$(echo "$SUMMARY_LINE" | sed -n 's/.*\([0-9][0-9]*\) Passed.*/\1/p')
-        WARNINGS=$(echo "$SUMMARY_LINE" | sed -n 's/.*\([0-9][0-9]*\) Warnings.*/\1/p')
-        FAILED=$(echo "$SUMMARY_LINE" | sed -n 's/.*\([0-9][0-9]*\) Failed.*/\1/p')
-        PASSED=${PASSED:-0}
-        WARNINGS=${WARNINGS:-0}
-        FAILED=${FAILED:-0}
-
-        # Write markdown header and results
         {
           echo "## OSPS Baseline Assessment Results"
           echo ""
@@ -181,26 +209,46 @@ runs:
           echo "|:------:|---------|---------|"
         } >> "$GITHUB_STEP_SUMMARY"
 
-        echo "$CONTROL_LINES" | while IFS= read -r line; do
-          # Determine status icon from log level
-          if echo "$line" | grep -q '\[ERROR\]'; then
-            ICON=":x:"
-          elif echo "$line" | grep -q '\[WARN\]'; then
-            ICON=":warning:"
-          else
-            ICON=":white_check_mark:"
-          fi
-
-          # Extract control ID and description
-          CONTROL=$(echo "$line" | sed -n 's/.*\(OSPS-[A-Z]*-[0-9]*\.[0-9]*\).*/\1/p')
-          DESCRIPTION=$(echo "$line" | sed "s/.*${CONTROL}: //")
-
-          if [ -n "$CONTROL" ]; then
+        if [ "$SUMMARY_FROM" = log ]; then
+          echo "$CONTROL_LINES" | while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            if echo "$line" | grep -qiE '\[(error|fatal)\]|level=(error|fatal)|"level"[[:space:]]*:[[:space:]]*"error"'; then
+              ICON=":x:"
+            elif echo "$line" | grep -qiE '\[(warn|warning)\]|level=warning|"level"[[:space:]]*:[[:space:]]*"warning"'; then
+              ICON=":warning:"
+            else
+              ICON=":white_check_mark:"
+            fi
+            CONTROL=$(echo "$line" | grep -oE "$OSPS_ID" | head -1 || true)
+            if [ -z "$CONTROL" ]; then
+              continue
+            fi
+            DESCRIPTION=$(echo "$line" | sed "s/^.*${CONTROL}: //" | sed 's/|/\\|/g')
+            if [ "$DESCRIPTION" = "$line" ]; then
+              DESCRIPTION=$(echo "$line" | sed "s/^.*${CONTROL}[[:space:]]*//" | sed 's/|/\\|/g')
+            fi
             echo "| ${ICON} | ${CONTROL} | ${DESCRIPTION} |" >> "$GITHUB_STEP_SUMMARY"
-          fi
-        done
+          done
+        else
+          jq -r '.runs[]?.results[]? |
+            [
+              (.level // "note"),
+              (.ruleId // .rule.id // "?"),
+              ((.message | if type == "object" then (.text // .markdown // "") else . end) // "")
+            ] | @tsv' "$SARIF_FILE" | while IFS="$(printf '\t')" read -r level ruleId msg; do
+            [ -z "$ruleId" ] && continue
+            [ "$ruleId" = "?" ] && continue
+            case "$level" in
+              error) ICON=":x:" ;;
+              warning) ICON=":warning:" ;;
+              *) ICON=":white_check_mark:" ;;
+            esac
+            msg=${msg//$'\t'/ }
+            msg=$(printf '%s' "$msg" | sed 's/|/\\|/g')
+            echo "| ${ICON} | ${ruleId} | ${msg} |" >> "$GITHUB_STEP_SUMMARY"
+          done
+        fi
 
-        # Fail the step if there are failed controls and fail-on-error is enabled
         if [ "$FAIL_ON_ERROR" = "true" ] && [ "$FAILED" -gt 0 ]; then
           echo "::error::OSPS Baseline assessment found ${FAILED} failed control(s)"
           exit 1
